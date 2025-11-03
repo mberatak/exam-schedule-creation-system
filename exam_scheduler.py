@@ -4,7 +4,7 @@ from datetime import datetime, date, time, timedelta
 from connection import Database
 
 def generate_dates(start_date: date, end_date: date, skip_weekends=True, excluded_weekdays=None, excluded_dates=None):
-    excluded_weekdays = set(excluded_weekdays or [])  # e.g. {5,6}
+    excluded_weekdays = set(excluded_weekdays or [])
     excluded_dates = set(excluded_dates or [])
     d = start_date
     while d <= end_date:
@@ -52,112 +52,120 @@ class ExamScheduler:
             rooms.append({"id":r[0],"kod":r[1],"ad":r[2],"kapasite":r[3],"enine":r[4],"boyuna":r[5],"sira":r[6]})
         return rooms
 
-    def student_has_conflict(self, student_exam_schedule, cand_date, cand_time, duration_minutes):
-        cand_dt = datetime.combine(cand_date, cand_time)
-        for (d,t,dur) in student_exam_schedule.get(student_exam_schedule_key(student_exam_schedule, None), []):
-            pass
-        # actual check below:
-        for s, exams in student_exam_schedule.items():
-            # we'll call per student outside, so not used
-            pass
-
     def schedule(self, start_date: date, end_date: date, selected_course_ids=None,
-                 duration_default=75, per_course_durations=None, bolum=None,
-                 skip_weekends=True, excluded_weekdays=None, excluded_dates=None,
-                 no_simultaneous_exams=False):
+                duration_default=75, per_course_durations=None, bolum=None,
+                skip_weekends=True, excluded_weekdays=None, excluded_dates=None,
+                no_simultaneous_exams=False):
         """
         per_course_durations: dict course_id -> duration_minutes
         excluded_weekdays: iterable of weekday numbers to skip (0=Mon...6=Sun)
         """
         self.no_simultaneous = no_simultaneous_exams
         per_course_durations = per_course_durations or {}
+        bekleme = getattr(self, "bekleme_suresi_minutes", 15)
 
-        # load courses and rooms
+        #  Dersleri ve sınıfları yüklüyoruz
         courses = self.load_courses(filter_ids=selected_course_ids)
-        # sort by class and then by student count descending (helps distribution)
         courses.sort(key=lambda c: (c['sinif'], -c['n_students']))
-
         rooms = self.load_rooms(bolum=bolum)
         if not rooms:
             raise RuntimeError("Derslik bulunamadı!")
 
+        #  Tarih listesi 
         date_list = list(generate_dates(start_date, end_date, skip_weekends=skip_weekends,
                                         excluded_weekdays=excluded_weekdays, excluded_dates=excluded_dates))
         if not date_list:
             raise RuntimeError("Verilen tarih aralığında kullanılabilir gün yok.")
 
-        # Structures
-        scheduled = []   # list of exam dicts
+        #  Hazırlık 
+        scheduled = []
         failed = []
-        student_schedule = {}  # student_no -> list of (datetime_start, datetime_end)
+        student_schedule = {}   # öğrenci_no -> [(start, end)]
+        class_day_count = {}    # (sınıf, gün) -> count
+        room_index = 0          # round-robin için oda göstergesi
 
-        # We'll try greedy: iterate courses, try to place them with heuristics
-        # Additional constraint: spread same class across days: track how many exams placed per day per class
-        class_day_count = {}  # (sinif, date) -> count
+        # Odaları karışık sırayla başlatmak için:
+        # random.shuffle(rooms)
 
         for course in courses:
-            placed=False
+            placed = False
             dur = per_course_durations.get(course['id'], duration_default)
+
             for d in date_list:
-                # prefer days where same class has fewer exams
-                # iterate times
                 for t in self.times_per_day:
-                    # check global simultaneous
-                    if no_simultaneous_exams and any(s['tarih']==d and s['saat']==t for s in scheduled):
+                    # aynı anda başka sınav varsa ve kısıt aktifse geç
+                    if no_simultaneous_exams and any(s['tarih'] == d and s['saat'] == t for s in scheduled):
                         continue
-                    # find room that fits
-                    candidate_rooms = [r for r in rooms if r['kapasite'] >= course['n_students']]
-                    if not candidate_rooms:
-                        failed.append({"course":course,"reason":"Kapasite yetersiz (tek derslikle sığmıyor)"})
-                        placed=True
-                        break
-                    candidate_rooms.sort(key=lambda r: r['kapasite'])
-                    for room in candidate_rooms:
-                        # room availability
-                        room_taken = any(s['tarih']==d and s['saat']==t and s['derslik_id']==room['id'] for s in scheduled)
-                        if room_taken: continue
-                        # student conflicts
-                        conflict=False
-                        cand_start = datetime.combine(d,t)
-                        cand_end = cand_start + timedelta(minutes=dur)
-                        for stu in course['students']:
-                            exams = student_schedule.get(stu, [])
-                            for (st,en) in exams:
-                                # if overlap or within bekleme time (15 min default)
-                                # require gap >= bekleme between end and next start
-                                gap_before = (cand_start - en).total_seconds()/60.0 if en < cand_start else (st - cand_end).total_seconds()/60.0
-                                # simpler: check overlap
-                                if not (cand_end <= st or en <= cand_start):
-                                    conflict=True; break
-                                # also ensure bekleme 15 min between exams
-                                if abs((cand_start - en).total_seconds()/60.0) < 15 and en <= cand_start:
-                                    conflict=True; break
-                                if abs((st - cand_end).total_seconds()/60.0) < 15 and st >= cand_end:
-                                    conflict=True; break
-                            if conflict: break
-                        if conflict: continue
-                        # class distribution heuristic: avoid placing too many same-class exams same day
-                        class_key = (course['sinif'], d)
-                        if class_day_count.get(class_key,0) >= 2:
-                            # if already two for this class that day, skip to next slot
+
+                    # odaları sırayla dene, her kurs farklı odayla başlasın
+                    for i in range(len(rooms)):
+                        room = rooms[(room_index + i) % len(rooms)]
+
+                        # aynı saat ve günde o oda dolu mu?
+                        if any(s['tarih'] == d and s['saat'] == t and s['derslik_id'] == room['id'] for s in scheduled):
                             continue
-                        # place
-                        rec = {"ders_id":course['id'], "ders_kod":course['kod'], "ders_ad":course['ad'],
-                               "tarih":d, "saat":t, "sure":dur, "derslik_id":room['id'], "derslik_ad":room['ad'],
-                               "n_students":course['n_students'], "sinif": course['sinif']}
+
+                        # öğrenci çakışması kontrolü
+                        cand_start = datetime.combine(d, t)
+                        cand_end = cand_start + timedelta(minutes=dur)
+                        conflict = False
+                        for stu in course['students']:
+                            for (st, en) in student_schedule.get(stu, []):
+                                overlap = not (cand_end <= st or en <= cand_start)
+                                if overlap or 0 <= (cand_start - en).total_seconds()/60.0 < bekleme or \
+                                0 <= (st - cand_end).total_seconds()/60.0 < bekleme:
+                                    conflict = True
+                                    break
+                            if conflict:
+                                break
+                        if conflict:
+                            continue
+
+                        # aynı sınıftan aynı güne fazla sınav olmasın
+                        class_key = (course['sinif'], d)
+                        if class_day_count.get(class_key, 0) >= 2:
+                            continue
+
+                        # Planı oluştur
+                        rec = {
+                            "ders_id": course['id'],
+                            "ders_kod": course['kod'],
+                            "ders_ad": course['ad'],
+                            "tarih": d,
+                            "saat": t,
+                            "sure": dur,
+                            "derslik_id": room['id'],
+                            "derslik_ad": room['ad'],
+                            "kapasite": room['kapasite'],
+                            "n_students": course['n_students'],
+                            "sinif": course['sinif']
+                        }
                         scheduled.append(rec)
-                        # update student schedules
+
+                        # öğrenci takvimi güncelle
                         for stu in course['students']:
                             student_schedule.setdefault(stu, []).append((cand_start, cand_end))
-                        class_day_count[class_key] = class_day_count.get(class_key,0) + 1
-                        placed=True
-                        break
-                    if placed: break
-                if placed: break
-            if not placed:
-                failed.append({"course":course,"reason":"Uygun slot / derslik bulunamadı"})
 
-        # write scheduled into DB
+                        class_day_count[class_key] = class_day_count.get(class_key, 0) + 1
+
+                        if room['kapasite'] < course['n_students']:
+                            failed.append({
+                                "course": course,
+                                "reason": f"Derslik kapasitesi ({room['kapasite']}) öğrenci sayısından ({course['n_students']}) küçük; planlandı ama sığmadı."
+                            })
+
+                        placed = True
+                        room_index = (room_index + 1) % len(rooms)  # sıradaki oda kullanılacak
+                        break  # bu oda seçildi
+                    if placed:
+                        break
+                if placed:
+                    break
+
+            if not placed:
+                failed.append({"course": course, "reason": "Uygun slot / derslik bulunamadı"})
+
+        #  Veritabanına yaz 
         for se in scheduled:
             try:
                 self.db.execute(
@@ -165,25 +173,57 @@ class ExamScheduler:
                     (se['ders_id'], se['tarih'], se['saat'], se['sure'], se['derslik_id'])
                 )
             except Exception as e:
-                failed.append({"course":se,"reason":f"DB insert hatası: {e}"})
+                failed.append({"course": se, "reason": f"DB insert hatası: {e}"})
 
         return scheduled, failed
 
-    def export_to_excel(self, scheduled_exams, filename="sinav_takvimi.xlsx"):
-        rows=[]
+
+
+    def export_to_excel(self, scheduled_exams, filename="sinav_takvimi.xlsx", exam_type=None):
+        rows = []
         for se in scheduled_exams:
+            tarih_str = se["tarih"].strftime("%Y-%m-%d") if hasattr(se["tarih"], "strftime") else str(se["tarih"])
+            saat_str = se["saat"].strftime("%H:%M") if hasattr(se["saat"], "strftime") else str(se["saat"])
+
+            kapasite = se.get("kapasite")
+            if kapasite is None and hasattr(self, "db"):
+                try:
+                    cap_row = self.db.execute(
+                        "SELECT kapasite FROM derslikler WHERE id=%s",
+                        (se["derslik_id"],),
+                        fetchone=True
+                    )
+                    if cap_row:
+                        kapasite = cap_row[0]
+                except Exception:
+                    kapasite = None
+
             rows.append({
+                "Sınav Türü": exam_type if exam_type else "",  # <— EK
                 "Ders ID": se["ders_id"],
                 "Ders Kodu": se["ders_kod"],
                 "Ders Adı": se["ders_ad"],
-                "Sınıf": se.get("sinif",""),
-                "Tarih": se["tarih"],
-                "Saat": se["saat"].strftime("%H:%M"),
+                "Sınıf": se.get("sinif", ""),
+                "Tarih": tarih_str,
+                "Saat": saat_str,
                 "Süre (dk)": se["sure"],
                 "Derslik ID": se["derslik_id"],
-                "Derslik Adı": se.get("derslik_ad",""),
-                "Öğrenci Sayısı": se.get("n_students",0)
+                "Derslik Adı": se.get("derslik_ad", ""),
+                "Derslik Kapasitesi": kapasite if kapasite is not None else "",
             })
+
         df = pd.DataFrame(rows)
-        df.to_excel(filename, index=False)
+        with pd.ExcelWriter(filename, engine="openpyxl", datetime_format="YYYY-MM-DD", date_format="YYYY-MM-DD") as writer:
+            df.to_excel(writer, index=False, sheet_name="Sınav Takvimi")
+            ws = writer.sheets["Sınav Takvimi"]
+            for col in ws.columns:
+                max_len = 0
+                col_letter = col[0].column_letter
+                for cell in col:
+                    try:
+                        if cell.value:
+                            max_len = max(max_len, len(str(cell.value)))
+                    except Exception:
+                        pass
+                ws.column_dimensions[col_letter].width = max_len + 2
         return filename

@@ -15,7 +15,7 @@ class AdminPanel(QWidget):
         self.setWindowTitle("Admin Paneli - Kullanıcı Yönetimi")
         self.setMinimumSize(800, 500)
 
-        # --- Form alanları ---
+        # Form alanları
         self.ad_input = QLineEdit()
         self.ad_input.setPlaceholderText("Ad Soyad")
 
@@ -35,7 +35,7 @@ class AdminPanel(QWidget):
         self.add_btn = QPushButton("Yeni Kullanıcı Ekle")
         self.add_btn.clicked.connect(self.add_user)
 
-        # --- Arama / Güncelle / Sil ---
+        # Arama / Güncelle / Sil
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Ara (isim veya e-posta)")
         self.search_btn = QPushButton("Ara")
@@ -50,14 +50,14 @@ class AdminPanel(QWidget):
         self.update_pwd_btn = QPushButton("Seçili Kullanıcının Şifresini Güncelle")
         self.update_pwd_btn.clicked.connect(self.update_password_dialog)
 
-        # --- Tablo ---
+        # Tablo
         self.table = QTableWidget()
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["ID", "Ad", "E-posta", "Rol", "Bölüm"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows) # self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
 
-        # --- Layout ---
+        # Layout
         form_layout = QHBoxLayout()
         form_layout.addWidget(self.ad_input)
         form_layout.addWidget(self.email_input)
@@ -176,7 +176,7 @@ class AdminPanel(QWidget):
 
 if __name__ == "__main__":
     # DB bilgilerini ihtiyaç ise buradan değiştir
-    db = Database(host="localhost", database="exam_schedule_db", user="postgres", password="thisisapassword", port=5432)
+    db = Database(host="localhost", database="exam_schedule_db", user="exam_user", password="1234", port=5432)
     db.connect()
 
     app = QApplication(sys.argv)
