@@ -1,11 +1,11 @@
 
 import psycopg2
-from psycopg2 import sql, OperationalError
-from passlib.hash import bcrypt
+from psycopg2 import OperationalError
+from passlib.hash import sha256_crypt
 import sys
 
 class Database:
-    def __init__(self, host="localhost", database="exam_schedule_db", user="postgres", password="thisisapassword", port=5432):
+    def __init__(self, host="localhost", database="exam_schedule_db", user="exam_user", password="1234", port=5432):
         self.config = dict(host=host, database=database, user=user, password=password, port=port)
         self.conn = None
         self.cur = None
@@ -14,7 +14,7 @@ class Database:
         try:
             self.conn = psycopg2.connect(**self.config)
             self.cur = self.conn.cursor()
-            # ensure users table exists
+            # Users tablosunun olduğundan emin ol
             self.create_users_table()
             print("✅ Veritabanına bağlantı başarılı.")
         except OperationalError as e:
@@ -46,16 +46,14 @@ class Database:
             self.conn.rollback()
             raise
 
-    # --- User helpers ---
     def add_user(self, ad, email, sifre_plain, rol="koordinator", bolum=""):
-        # hash password
-        hashed = bcrypt.hash(sifre_plain)
+        # Şifreleyip kaydediliyor
+        hashed = sha256_crypt.hash(sifre_plain)
         q = "INSERT INTO users (ad, email, sifre, rol, bolum) VALUES (%s, %s, %s, %s, %s)"
         try:
             self.execute(q, (ad, email, hashed, rol, bolum))
             return True
         except Exception as e:
-            # likely unique constraint failed etc.
             raise
 
     def list_users(self, filter_text=None):
@@ -72,7 +70,7 @@ class Database:
         self.execute(q, (email,))
 
     def update_password(self, email, new_plain):
-        new_hash = bcrypt.hash(new_plain)
+        new_hash = sha256_crypt.hash(new_plain)
         q = "UPDATE users SET sifre=%s WHERE email=%s"
         self.execute(q, (new_hash, email))
 

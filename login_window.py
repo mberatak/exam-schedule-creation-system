@@ -72,6 +72,7 @@ class LoginWindow(QWidget):
 
         else:
             QMessageBox.critical(self, "Hata", "Geçersiz e-posta veya şifre!")
+            
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
