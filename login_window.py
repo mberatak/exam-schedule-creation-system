@@ -1,3 +1,4 @@
+
 import sys
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit,
@@ -5,8 +6,16 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QFont
 from PySide6.QtCore import QRect
-from connection import Database
 from PySide6.QtGui import QPainter, QImage
+from passlib.hash import sha256_crypt 
+from connection import Database
+
+try:
+    from admin_panel import AdminPanel
+    from coordinator_panel import CoordinatorPanel
+except ImportError as e:
+    class AdminPanel(QWidget): pass 
+    class CoordinatorPanel(QWidget): pass
 
 class LoginWindow(QWidget):
     def __init__(self):
@@ -16,8 +25,11 @@ class LoginWindow(QWidget):
 
         self.db = Database()
         self.db.connect()
+        
+        self.admin_window = None
+        self.coord_window = None
+        
 
-        # --- Arayüz Elemanları ---
         self.title = QLabel("Kocaeli Üniversitesi Sınav Sistemi")
         self.title.setFont(QFont("Arial", 16, QFont.Bold))
         self.title.setStyleSheet("color: #ffffff; margin-bottom: 15px;")
@@ -33,7 +45,7 @@ class LoginWindow(QWidget):
         self.login_button.setStyleSheet("background-color: #3498db; color: white; padding: 5px; border-radius: 8px;")
         self.login_button.clicked.connect(self.check_login)
 
-        # --- Düzen ---
+        # ekle
         layout = QVBoxLayout()
         layout.addWidget(self.title)
         layout.addWidget(self.email_input)
@@ -43,8 +55,8 @@ class LoginWindow(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        image = QImage('pics/bgimage.jpg')  # Görsel yolu
-        painter.drawImage(QRect(0, 0, self.width(), self.height()), image)    
+        image = QImage('pics/bgimage.jpg')
+        painter.drawImage(QRect(0, 0, self.width(), self.height()), image)
 
     def check_login(self):
         email = self.email_input.text().strip()
@@ -54,23 +66,39 @@ class LoginWindow(QWidget):
             QMessageBox.warning(self, "Uyarı", "Lütfen e-posta ve şifre giriniz.")
             return
 
-        # Kullanıcıyı kontrol et
-        query = "SELECT rol, bolum FROM users WHERE email=%s AND sifre=%s"
-        self.db.execute(query, (email, sifre))
-        result = self.db.fetchone()
+    
+        user_data = self.db.get_user_by_email(email) 
+        
+        if user_data:
+            
+            rol, bolum, sifre_hash = user_data[3], user_data[4], user_data[5]
+            
+            
+            if sha256_crypt.verify(sifre, sifre_hash): 
+                
+                QMessageBox.information(self, "Giriş Başarılı", f"Hoşgeldiniz {rol} ({bolum})")
 
-        if result:
-            rol, bolum = result
-            QMessageBox.information(self, "Giriş Başarılı", f"Hoşgeldiniz {rol} ({bolum})")
+                
+                if rol == "admin":
+                    print("Admin paneline yönlendiriliyor...")
+                    if self.admin_window is None:
+                        
+                        self.admin_window = AdminPanel(self.db) 
+                    self.hide()  
+                    self.admin_window.show() 
+                    
+                else: 
+                    print("Koordinatör paneline yönlendiriliyor...")
+                    if self.coord_window is None:
+                        
+                        self.coord_window = CoordinatorPanel(self.db) 
+                    self.hide() 
+                    self.coord_window.show() 
 
-            if rol == "admin":
-                print("Admin paneline yönlendiriliyor...")
-                # TODO: admin_panel.py'yi aç
             else:
-                print("Koordinatör paneline yönlendiriliyor...")
-                # TODO: coordinator_panel.py'yi aç
-
+                QMessageBox.critical(self, "Hata", "Geçersiz e-posta veya şifre!")
         else:
+            
             QMessageBox.critical(self, "Hata", "Geçersiz e-posta veya şifre!")
             
 

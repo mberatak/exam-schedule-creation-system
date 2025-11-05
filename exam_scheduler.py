@@ -43,10 +43,11 @@ class ExamScheduler:
         return courses
 
     def load_rooms(self, bolum=None):
+        # Load rooms ordered by capacity DESC so larger rooms are tried first
         if bolum:
-            rows = self.db.execute("SELECT id, kod, ad, kapasite, enine_sira, boyuna_sira, sira_yapisi FROM derslikler WHERE bolum=%s ORDER BY kapasite", (bolum,), fetchall=True)
+            rows = self.db.execute("SELECT id, kod, ad, kapasite, enine_sira, boyuna_sira, sira_yapisi FROM derslikler WHERE bolum=%s ORDER BY kapasite DESC", (bolum,), fetchall=True)
         else:
-            rows = self.db.execute("SELECT id, kod, ad, kapasite, enine_sira, boyuna_sira, sira_yapisi FROM derslikler ORDER BY kapasite", fetchall=True)
+            rows = self.db.execute("SELECT id, kod, ad, kapasite, enine_sira, boyuna_sira, sira_yapisi FROM derslikler ORDER BY kapasite DESC", fetchall=True)
         rooms=[]
         for r in rows:
             rooms.append({"id":r[0],"kod":r[1],"ad":r[2],"kapasite":r[3],"enine":r[4],"boyuna":r[5],"sira":r[6]})
@@ -104,6 +105,9 @@ class ExamScheduler:
                         # aynı saat ve günde o oda dolu mu?
                         if any(s['tarih'] == d and s['saat'] == t and s['derslik_id'] == room['id'] for s in scheduled):
                             continue
+                        # Odanın kapasitesi yetersizse atla (yerleştirmeden önce kontrol)
+                        if room['kapasite'] < course['n_students']:
+                            continue
 
                         # öğrenci çakışması kontrolü
                         cand_start = datetime.combine(d, t)
@@ -148,11 +152,7 @@ class ExamScheduler:
 
                         class_day_count[class_key] = class_day_count.get(class_key, 0) + 1
 
-                        if room['kapasite'] < course['n_students']:
-                            failed.append({
-                                "course": course,
-                                "reason": f"Derslik kapasitesi ({room['kapasite']}) öğrenci sayısından ({course['n_students']}) küçük; planlandı ama sığmadı."
-                            })
+                        # capacity was checked earlier, no need to append a capacity-failure here
 
                         placed = True
                         room_index = (room_index + 1) % len(rooms)  # sıradaki oda kullanılacak
