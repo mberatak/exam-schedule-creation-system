@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QMessageBox, QSpinBox, QGraphicsScene, QGraphicsView,
     QFileDialog, QFrame, QDialog, QDateEdit, QTextEdit, QListWidget, QListWidgetItem,
-    QCheckBox, QAbstractItemView
+    QCheckBox, QAbstractItemView, QInputDialog
 )
 
 from connection import Database
@@ -28,41 +28,23 @@ class CoordinatorPanel(QWidget):
         self.setMinimumSize(1200, 800)
 
         self.loader = ExcelLoader(db)
-        self._seat_widgets = []  # Scene'e eklenen gerçek QPushButton referansları
+        self._seat_widgets = []
 
-        # Derslik formu
+        # --- Derslik formu ---
         self.kod_input = QLineEdit(placeholderText="Derslik Kodu")
         self.ad_input = QLineEdit(placeholderText="Derslik Adı")
 
-        self.kapasite_input = QSpinBox()
-        self.kapasite_input.setRange(5, 1000)
-        self.kapasite_input.setValue(40)
+        self.kapasite_input = QSpinBox(); self.kapasite_input.setRange(5, 1000); self.kapasite_input.setValue(40)
+        self.enine_input = QSpinBox(); self.enine_input.setRange(1, 50); self.enine_input.setValue(7)
+        self.boyuna_input = QSpinBox(); self.boyuna_input.setRange(1, 50); self.boyuna_input.setValue(9)
+        self.sira_input = QSpinBox(); self.sira_input.setRange(1, 10); self.sira_input.setValue(3)
 
-        self.enine_input = QSpinBox()
-        self.enine_input.setRange(1, 50)
-        self.enine_input.setValue(7)
+        self.add_btn = QPushButton("Derslik Ekle"); self.add_btn.clicked.connect(self.add_derslik)
+        self.refresh_btn = QPushButton("Yenile"); self.refresh_btn.clicked.connect(self.load_derslikler)
+        self.delete_btn = QPushButton("Seçili Sil"); self.delete_btn.clicked.connect(self.delete_selected)
+        self.visual_btn = QPushButton("Görselleştir"); self.visual_btn.clicked.connect(self.show_visual)
 
-        self.boyuna_input = QSpinBox()
-        self.boyuna_input.setRange(1, 50)
-        self.boyuna_input.setValue(9)
-
-        self.sira_input = QSpinBox()
-        self.sira_input.setRange(1, 10)
-        self.sira_input.setValue(3)
-
-        self.add_btn = QPushButton("Derslik Ekle")
-        self.add_btn.clicked.connect(self.add_derslik)
-
-        self.refresh_btn = QPushButton("Yenile")
-        self.refresh_btn.clicked.connect(self.load_derslikler)
-
-        self.delete_btn = QPushButton("Seçili Sil")
-        self.delete_btn.clicked.connect(self.delete_selected)
-
-        self.visual_btn = QPushButton("Görselleştir")
-        self.visual_btn.clicked.connect(self.show_visual)
-
-        # Excel butonları
+        # --- Excel ve planlama butonları ---
         self.load_ders_excel_btn = QPushButton("Ders Listesi Yükle")
         self.load_ders_excel_btn.clicked.connect(self.load_ders_excel)
 
@@ -72,7 +54,17 @@ class CoordinatorPanel(QWidget):
         self.generate_exam_btn = QPushButton("Sınav Takvimi Oluştur")
         self.generate_exam_btn.clicked.connect(self.open_exam_settings)
 
-        # Tablo & Görsel alanı
+        # --- Yeni butonlar (EKLENDİ) ---
+        self.show_exams_btn = QPushButton("📋 Planlanan Sınavları Görüntüle")
+        self.show_exams_btn.clicked.connect(self.show_exams)
+
+        #self.create_seat_btn = QPushButton("🪑 Oturma Planı Oluştur (Seçili Sınav)")
+        #self.create_seat_btn.clicked.connect(self.create_seating)
+
+        self.export_pdf_btn = QPushButton("🖨️ Oturma Planını PDF Olarak İndir")
+        self.export_pdf_btn.clicked.connect(self.export_seating_pdf)
+
+        # --- Tablolar ve görsel alan ---
         self.table = QTableWidget()
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(["ID", "Kod", "Ad", "Kapasite", "Enine", "Boyuna", "Sıra"])
@@ -83,7 +75,7 @@ class CoordinatorPanel(QWidget):
         self.view = QGraphicsView(self.scene)
         self.view.setMinimumHeight(260)
 
-        # Yerleşim
+        # --- Layout ---
         form = QHBoxLayout()
         form.addWidget(self.kod_input)
         form.addWidget(self.ad_input)
@@ -103,15 +95,19 @@ class CoordinatorPanel(QWidget):
         excel_line.addWidget(self.load_ogr_excel_btn)
         excel_line.addWidget(self.generate_exam_btn)
 
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
+        excel_line2 = QHBoxLayout()
+        excel_line2.addWidget(self.show_exams_btn)
+        #excel_line2.addWidget(self.create_seat_btn)
+        excel_line2.addWidget(self.export_pdf_btn)
+
+        line = QFrame(); line.setFrameShape(QFrame.HLine); line.setFrameShadow(QFrame.Sunken)
 
         main = QVBoxLayout()
         main.addLayout(form)
         main.addLayout(btns)
         main.addWidget(line)
         main.addLayout(excel_line)
+        main.addLayout(excel_line2)
         main.addWidget(QLabel("Derslikler:"))
         main.addWidget(self.table)
         main.addWidget(QLabel("Derslik Görseli:"))
@@ -128,7 +124,66 @@ class CoordinatorPanel(QWidget):
         msg.setText(text)
         msg.setIcon(icon)
         msg.exec()
+    def show_exams(self):
+        """Veritabanındaki planlanan sınavları listeler."""
+        try:
+            rows = self.db.execute("""
+                SELECT s.id, d.kod, d.ad, s.tarih, s.saat, l.ad
+                FROM sinavlar s
+                JOIN dersler d ON s.ders_id = d.id
+                JOIN derslikler l ON s.derslik_id = l.id
+                ORDER BY s.tarih, s.saat
+            """, fetchall=True)
 
+            if not rows:
+                self.show_message("Boş", "Henüz sınav planı oluşturulmamış.")
+                return
+
+            table = QTableWidget()
+            table.setColumnCount(6)
+            table.setHorizontalHeaderLabels(["ID", "Ders Kodu", "Ders Adı", "Tarih", "Saat", "Derslik"])
+            table.setRowCount(len(rows))
+            for i, r in enumerate(rows):
+                for j, val in enumerate(r):
+                    table.setItem(i, j, QTableWidgetItem(str(val)))
+            table.resizeColumnsToContents()
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Planlanan Sınavlar")
+            dlg.resize(700, 400)
+            layout = QVBoxLayout()
+            layout.addWidget(table)
+            dlg.setLayout(layout)
+            dlg.exec()
+        except Exception as e:
+            self.show_message("Hata", f"Sınav listesi yüklenemedi: {e}", QMessageBox.Critical)
+
+    def create_seating(self):
+        """Kullanıcıdan sınav ID alıp oturma planı oluşturur."""
+        exam_id, ok = QInputDialog.getInt(self, "Sınav ID", "Sınav ID numarasını girin:")
+        if not ok:
+            return
+        try:
+            planner = SeatPlanner(self.db)
+            assignments = planner.assign_seats(exam_id)
+            self.show_message("Başarılı", f"Oturma planı oluşturuldu ({len(assignments)} öğrenci).")
+        except Exception as e:
+            self.show_message("Hata", f"Oturma planı oluşturulamadı: {e}", QMessageBox.Critical)
+
+    def export_seating_pdf(self):
+        """Seçili sınav için oturma planını PDF olarak dışa aktarır."""
+        exam_id, ok = QInputDialog.getInt(self, "Sınav ID", "Sınav ID numarasını girin:")
+        if not ok:
+            return
+        try:
+            path, _ = QFileDialog.getSaveFileName(self, "PDF olarak kaydet", "oturma_plani.pdf", "PDF Files (*.pdf)")
+            if not path:
+                return
+            planner = SeatPlanner(self.db)
+            output = planner.export_pdf(exam_id, path)
+            self.show_message("Kaydedildi", f"PDF oluşturuldu:\n{output}")
+        except Exception as e:
+            self.show_message("Hata", f"PDF oluşturulamadı: {e}", QMessageBox.Critical)
     def load_derslikler(self):
         q = """
         SELECT id, kod, ad, kapasite, enine_sira, boyuna_sira, sira_yapisi
@@ -391,13 +446,13 @@ class ExamSettingsDialog(QDialog):
         self.bekleme_spin.setValue(15)
 
         self.type_combo = QLineEdit("Final")  # Basit metin (istenirse ileride combobox yapılır)
-        self.times_edit = QLineEdit("09:00, 13:30, 17:00")
+        self.times_edit = QLineEdit("09:00, 10:00, 13:30, 15:30, 17:00")
 
         # Sağ: ders bazlı süre override
         self.override_label = QLabel("Seçili ders için süre (dk) ayarla:")
         self.override_spin = QSpinBox()
         self.override_spin.setRange(30, 240)
-        self.override_spin.setValue(75)
+        self.override_spin.setValue(40)
 
         self.set_override_btn = QPushButton("Süreyi Uygula (Seçili Derslere)")
         self.set_override_btn.clicked.connect(self.apply_override)
@@ -496,6 +551,7 @@ class ExamSettingsDialog(QDialog):
         try:
             self.db.execute("TRUNCATE TABLE sinavlar RESTART IDENTITY CASCADE;")
             self.db.execute("TRUNCATE TABLE ogrenci_sinav RESTART IDENTITY CASCADE;")
+            self.db.execute("TRUNCATE TABLE oturma RESTART IDENTITY CASCADE;")
         except Exception as e:
             self.output_text.append(f"⚠ Tablolar sıfırlanamadı: {e}")
 
@@ -537,7 +593,8 @@ class ExamSettingsDialog(QDialog):
 
             # Çıktı
             self.output_text.clear()
-            self.output_text.append(f"✅ Planlanan: {len(scheduled)}")
+            self.output_text.append(f"✅ Planlanan sınav: {len(scheduled)}")
+            self.output_text.append(f"✅ Oturma planları otomatik oluşturuldu")
             for se in scheduled:
                 self.output_text.append(
                     f"{se['ders_kod']} - {se['ders_ad']} | "
@@ -590,6 +647,7 @@ class ExamSettingsDialog(QDialog):
         pd.DataFrame(df_rows).to_excel(path, index=False)
         self.show_message("Kaydedildi", f"Excel kaydedildi: {path}")
 
+    
     def rebuild_ogrenci_sinav(self):
         """
         ogrenci_sinav tablosunu (no, ad, soyad, ders_id) kapasiteyi dikkate alarak baştan kurar.

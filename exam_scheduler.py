@@ -65,6 +65,14 @@ class ExamScheduler:
         per_course_durations = per_course_durations or {}
         bekleme = getattr(self, "bekleme_suresi_minutes", 15)
 
+        # Eski oturma kayıtlarını temizle
+        try:
+            self.db.execute("TRUNCATE TABLE oturma RESTART IDENTITY CASCADE;")
+            
+        except Exception as e:
+            # Eğer TRUNCATE desteklenmiyorsa DELETE kullan
+            self.db.execute("DELETE FROM oturma;")
+
         #  Dersleri ve sınıfları yüklüyoruz
         courses = self.load_courses(filter_ids=selected_course_ids)
         courses.sort(key=lambda c: (c['sinif'], -c['n_students']))
@@ -85,12 +93,12 @@ class ExamScheduler:
         class_day_count = {}    # (sınıf, gün) -> count
         room_index = 0          # round-robin için oda göstergesi
 
-        # Odaları karışık sırayla başlatmak için:
-        # random.shuffle(rooms)
-
         for course in courses:
             placed = False
             dur = per_course_durations.get(course['id'], duration_default)
+            
+            # Her ders için farklı oda başlangıcı
+            start_room_index = room_index
 
             for d in date_list:
                 for t in self.times_per_day:
@@ -98,14 +106,13 @@ class ExamScheduler:
                     if no_simultaneous_exams and any(s['tarih'] == d and s['saat'] == t for s in scheduled):
                         continue
 
-                    # odaları sırayla dene, her kurs farklı odayla başlasın
                     for i in range(len(rooms)):
-                        room = rooms[(room_index + i) % len(rooms)]
+                        room = rooms[(start_room_index + i) % len(rooms)]
 
                         # aynı saat ve günde o oda dolu mu?
                         if any(s['tarih'] == d and s['saat'] == t and s['derslik_id'] == room['id'] for s in scheduled):
                             continue
-                        # Odanın kapasitesi yetersizse atla (yerleştirmeden önce kontrol)
+                        # Odanın kapasitesi yetersizse atla
                         if room['kapasite'] < course['n_students']:
                             continue
 
@@ -152,32 +159,90 @@ class ExamScheduler:
 
                         class_day_count[class_key] = class_day_count.get(class_key, 0) + 1
 
-                        # capacity was checked earlier, no need to append a capacity-failure here
-
                         placed = True
-                        room_index = (room_index + 1) % len(rooms)  # sıradaki oda kullanılacak
                         break  # bu oda seçildi
                     if placed:
                         break
                 if placed:
                     break
 
+            # Her dersten sonra oda indexini artır
+            room_index = (room_index + 1) % len(rooms)
+
             if not placed:
                 failed.append({"course": course, "reason": "Uygun slot / derslik bulunamadı"})
 
         #  Veritabanına yaz 
+        sinav_id_map = {}  # ders_id -> sinav_id mapping
         for se in scheduled:
             try:
-                self.db.execute(
-                    "INSERT INTO sinavlar (ders_id, tarih, saat, sure, derslik_id) VALUES (%s,%s,%s,%s,%s)",
-                    (se['ders_id'], se['tarih'], se['saat'], se['sure'], se['derslik_id'])
+                # Insert ve oluşturulan sinav_id'yi al
+                result = self.db.execute(
+                    "INSERT INTO sinavlar (ders_id, tarih, saat, sure, derslik_id) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                    (se['ders_id'], se['tarih'], se['saat'], se['sure'], se['derslik_id']),
+                    fetchone=True
                 )
+                if result:
+                    sinav_id = result[0]
+                    sinav_id_map[se['ders_id']] = sinav_id
+                    se['sinav_id'] = sinav_id  # scheduled listesine de ekle
             except Exception as e:
                 failed.append({"course": se, "reason": f"DB insert hatası: {e}"})
 
+        # Oturma planlarını otomatik oluştur
+        seating_errors = []
+        for se in scheduled:
+            if 'sinav_id' in se:
+                try:
+                    self._create_seating_for_exam(se['sinav_id'], se['ders_id'], se['derslik_id'])
+                except Exception as e:
+                    seating_errors.append(f"{se['ders_kod']}: {e}")
+        
+        if seating_errors:
+            for err in seating_errors:
+                failed.append({"course": {"kod": "OTURMA"}, "reason": err})
+
         return scheduled, failed
 
-
+    def _create_seating_for_exam(self, sinav_id: int, ders_id: int, derslik_id: int):
+        """Belirli bir sınav için oturma planı oluşturur."""
+        # Öğrencileri al
+        studs = self.db.execute(
+            "SELECT ogrenci_no FROM ogrenci_ders WHERE ders_id=%s ORDER BY ogrenci_no",
+            (ders_id,), fetchall=True
+        )
+        students = [s[0] for s in studs] if studs else []
+        
+        # Derslik bilgisini al
+        room = self.db.execute(
+            "SELECT enine_sira, boyuna_sira FROM derslikler WHERE id=%s",
+            (derslik_id,), fetchone=True
+        )
+        if not room:
+            raise RuntimeError(f"Derslik bulunamadı (ID: {derslik_id})")
+        
+        enine, boyuna = room
+        capacity = int(enine) * int(boyuna)
+        
+        if len(students) > capacity:
+            raise RuntimeError(f"Kapasite yetersiz: {len(students)} öğrenci, kapasite {capacity}")
+        
+        # Mevcut oturma kayıtlarını temizle
+        self.db.execute("DELETE FROM oturma WHERE sinav_id=%s", (sinav_id,))
+        
+        # Oturma planını oluştur
+        idx = 0
+        for r in range(int(boyuna)):
+            for c in range(int(enine)):
+                if idx >= len(students):
+                    break
+                self.db.execute(
+                    "INSERT INTO oturma (sinav_id, ogrenci_no, sira, sutun) VALUES (%s, %s, %s, %s)",
+                    (sinav_id, students[idx], r + 1, c + 1)
+                )
+                idx += 1
+            if idx >= len(students):
+                break
 
     def export_to_excel(self, scheduled_exams, filename="sinav_takvimi.xlsx", exam_type=None):
         rows = []
