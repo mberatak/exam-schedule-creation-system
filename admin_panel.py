@@ -95,7 +95,7 @@ class AdminPanel(QWidget):
         email = self.email_input.text().strip()
         sifre = self.sifre_input.text().strip()
         rol = self.rol_input.currentText()
-        bolum = self.bolum_input.text().strip()
+        bolum = self.bolum_input.currentText().strip()
 
         if not (ad and email and sifre):
             self.show_message("Eksik Alan", "Ad, e-posta ve şifre girilmesi zorunludur.", QMessageBox.Warning)
@@ -176,7 +176,7 @@ class AdminPanel(QWidget):
 
 if __name__ == "__main__":
     # DB bilgilerini ihtiyaç ise buradan değiştir
-    db = Database(host="localhost", database="exam_schedule_db", user="exam_user", password="1234", port=5432)
+    db = Database(host="localhost", database="exam_schedule_db", user="postgres", password="thisisapassword", port=5432)
     db.connect()
 
     app = QApplication(sys.argv)
